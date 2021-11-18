@@ -7,7 +7,6 @@ suffix: .fastq.gz
 tags:
   r1: _R1
   r2: _R2
-  tag: ""
 
 # The root argument tells you where the genome will be located
 # on the local system. All other arguments are required for

@@ -5,7 +5,7 @@ Data is **assumed to be paired-end**, and a two-treatment design is assumed, alt
 The steps implemented are:
 
 1. Prepare the reference
-	- Download the `fa` and `gtf` files for the relevent build
+	- Download the `fa` and `gtf` files for the relevant build
 	- Prepare the set of decoy transcripts
 	- Index the reference using the set of decoy transcripts
 2. Pre-process raw fq files
@@ -25,14 +25,14 @@ The steps implemented are:
 Prior to executing the workflow, please ensure the following steps have been performed
 
 1. Place unprocessed `fastq` (or `fastq.gz`) files in `data/raw/fastq`. This path is hard-wired into the workflow and cannot be changed. If samples have been run across multiple lanes, please merge prior to running this workflow as all samples are expected to be in a single pair of files.
-2. Prepare a tab-separated file, usually `samples.tsv` and place this in the `config` directory. The column name `sample` is mandatory, however any other columns required in the analysis can be specified in `config.yml`
+2. Prepare a tab-separated file, usually `samples.tsv` and place this in the `config` directory. The column name `sample` is mandatory, however any other columns required in the analysis can be specified in `config.yml`. When entering filenames in the sample column, you can leave off any suffixes (e.g. fastq.gz) as these are specified in `config.yml`. File names are expected to finish in `_R[12].fastq.gz` and only the section preceding this should be used for the `samples` column
 3. Edit `config.yml` as required. Fields cannot be changed
 
 ## Snakemake implementation
 
 The basic workflow is written `snakemake` and can be called using the following steps.
 
-Firstly, setup the required conda environments
+Firstly, set-up the required conda environments
 
 ```
 snakemake \
@@ -61,7 +61,7 @@ snakemake \
 	--cores 16
 ```
 
-- All data (salmon quants, trimmed fastq etc) will be written to the `data` directory. Trimmed fastq and `salmon quant aux_info` files are makred as temporary and can be saefly deleted after copletion of the analysis
+- All data (salmon quants, trimmed fastq etc) will be written to the `data` directory. Trimmed fastq and `salmon quant aux_info` files are marked as temporary and can be safely deleted after completion of the analysis
 - RMarkdown files will be added to the `anaylsis` directory using modules provided in the workflow
 - Compiled `html` files will be written to the `docs` folder, along with any topTable files
 

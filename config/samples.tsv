@@ -1,7 +1,7 @@
 sample	treat	replicate
-MDA-MB-453_siCtrl_1	siCtrl	1
-MDA-MB-453_siCtrl_2	siCtrl	2
-MDA-MB-453_siCtrl_3	siCtrl	3
-MDA-MB-453_siTFAP2B_1	siTFAP2B	1
-MDA-MB-453_siTFAP2B_2	siTFAP2B	2
-MDA-MB-453_siTFAP2B_3	siTFAP2B	3
+file1	A	1
+file2	A 2
+file3 A	3
+file4	B	1
+file5	B	2
+file6	B	3
