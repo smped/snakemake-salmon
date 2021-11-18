@@ -32,18 +32,43 @@ samples <- config$samples %>%
 
 ## Description
 
-This is a standardised workflow for beginning the comparison between two or ChIP targets, using BAM files as the starting point.
-Treatment groups and targets are specified using `config/config.yml`.
+This is a standardised workflow for data preparation and a naive analysis of RNA-Seq data.
+Given that all steps are automated, **results must be checked carefully**.
+Multiple plots are provided for quick visual identification of any potential problems.
 
-If H3K27ac is provided as a ChIP target with exactly two conditions, Super-Enhancers will be detected using the ROSE algorithm.
+The default analysis will perform one or more pairwise comparisons, as specified in `config/config.yml`.
+The workflow is presented as a DAG below, along with fine details
 
-## Workflow
+## Steps
+
+### QC
+
+This is performed on raw and trimmed files using [`FastQC`](https://www.bioinformatics.babraham.ac.uk/projects/fastqc/), with summaries written using [`ngsReports`](https://bioconductor.org/packages/release/bioc/html/ngsReports.html)
+QC steps on count data is also provided.
+
+All of these steps are executed regardless of any comparisons being performed.
+
+### Read Trimming
+
+This is performed using [`AdapterRemoval`](https://adapterremoval.readthedocs.io/en/stable/) with parameters able to be provided via `config.yml`
+
+### Differential Expression
+
+The approach here is to summarise to gene-level counts prior to analysis.
+
+- Data is normalised using [Condition-Quantile normalisation](https://doi.org/10.1093/biostatistics/kxr054) accounting for bias from GC content or gene length.
+Only detected (i.e. non-zero) transcripts are used in the estimation of these values.
+- The [Quasi-Likelihood approach](https://doi.org/10.1515/1544-6115.1826) is used for dispersion estimates
+- Hypothesis testing uses a range-based $H_0$ via [`glmTreat()`](https://doi.org/10.1093/bioinformatics/btp053)
+
+
+## DAG
 
 ```{r plot-workflow, fig.height = 10, fig.width = 10, fig.cap = "*Summary of processing workflow. The primary data pipeline is shown in red, preparatory steps are shown in blue whilst collation of final output is in green.*"}
 here::here("workflow", "rules", "rulegraph.dot") %>%
   readLines() %>%
   rm_dot_node(node = "\"all\"") %>%
-  add_input_node(node = "Raw Data", col = "red", ignore = "(download|define|macs2|create|make)") %>%
+  add_input_node(node = "Raw Data", col = "red", ignore = "(download|define|create|make)") %>%
   change_node_colour("(remove|salmon|counts|analysis)", "red") %>%
   change_node_colour("(download|make|index)", "blue") %>%
   change_node_colour("(find|fastqc|site|template)", "forestgreen") %>%

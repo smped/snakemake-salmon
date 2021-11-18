@@ -23,8 +23,8 @@ fastqc:
 
 # Settings for Adapter Removal
 trimming:
-  ## These should be checked against those detected by bbmerge
-  ## Currently these are taken from the NuGen kit
+  ## These should be checked against those detected by bbmerge and changed if required
+  ## The workflow should be rerun if differences are noticed
   adapter1: AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
   adapter2: AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT
   maxns: 1
@@ -57,7 +57,7 @@ analysis:
   batch: replicate # Only specify a column for a nested approach. Otherwise place these in 'other'
   other:
   comparisons:
-    - ['siCtrl', 'siTFAP2B'] # Set all pairwise comparisons here
+    - ['A', 'B'] # Set all pairwise comparisons here
 
 # Setting this to false will prevent any manually edited version of Rmd files
 # from being over-written during a rerun. This is not foolproof, so please
