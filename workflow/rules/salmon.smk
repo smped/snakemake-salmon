@@ -48,7 +48,7 @@ rule salmon_quant:
         interval = random.uniform(0, 1),
         tries = 10
     threads: 8
-    conda: "../envs/salmon.yml" 
+    conda: "../envs/salmon.yml"
     log: "workflow/logs/salmon/{sample}_quant.log"
     shell:
         """
@@ -62,7 +62,7 @@ rule salmon_quant:
             {params.extra} \
             -o {params.dir} \
             -1 {input.r1} \
-            -2 {input.r2} 
+            -2 {input.r2} &>> {log}
 
         if [[ {params.git} == "True" ]]; then
             TRIES={params.tries}
