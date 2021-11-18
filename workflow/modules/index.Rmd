@@ -1,0 +1,82 @@
+---
+title: "Outline Of Analysis"
+---
+
+```{r set-knitr-opts, echo=FALSE, child = '../workflow/modules/setup_chunk.Rmd'}
+```
+
+
+```{r packages}
+library(tidyverse)
+library(DiagrammeR)
+library(pander)
+library(yaml)
+library(scales)
+```
+
+```{r remotes, results='hide'}
+## Deal with github packages
+if (!"spBioUtils" %in% rownames(installed.packages()))
+  BiocManager::install("steveped/spBioUtils")
+stopifnot(library(spBioUtils, logical.return = TRUE))
+```
+
+```{r config}
+config <- here::here("config/config.yml") %>%
+  read_yaml()
+samples <- config$samples %>%
+  here::here() %>%
+  read_tsv()
+```
+
+
+## Description
+
+This is a standardised workflow for beginning the comparison between two or ChIP targets, using BAM files as the starting point.
+Treatment groups and targets are specified using `config/config.yml`.
+
+If H3K27ac is provided as a ChIP target with exactly two conditions, Super-Enhancers will be detected using the ROSE algorithm.
+
+## Workflow
+
+```{r plot-workflow, fig.height = 10, fig.width = 10, fig.cap = "*Summary of processing workflow. The primary data pipeline is shown in red, preparatory steps are shown in blue whilst collation of final output is in green.*"}
+here::here("workflow", "rules", "rulegraph.dot") %>%
+  readLines() %>%
+  rm_dot_node(node = "\"all\"") %>%
+  add_input_node(node = "Raw Data", col = "red", ignore = "(download|define|macs2|create|make)") %>%
+  change_node_colour("(remove|salmon|counts|analysis)", "red") %>%
+  change_node_colour("(download|make|index)", "blue") %>%
+  change_node_colour("(find|fastqc|site|template)", "forestgreen") %>%
+  str_replace_all("_", "\n") %>%
+  str_replace_all("snakemake\ndag", "snakemake_dag") %>%
+  str_replace_all("fontsize=[0-9]+", "fontsize=16") %>%
+  str_replace_all("(.+graph.+)(\\];)", "\\1, rankdir = LR\\2") %>%
+  grViz()
+```
+
+## Parameter Description
+
+Parameters set for the complete workflow are:
+
+```{r printYAML, echo=FALSE, results='asis'}
+pander(config)
+```
+
+## Samples
+
+The samples provided in the config file are:
+
+```{r print-samples, echo=FALSE}
+pander(samples)
+```
+
+
+<button type="button" class="btn btn-default btn-sessioninfo" data-toggle="collapse" data-target="#sessioninfo" style="display: block;">
+<span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span> Session information
+</button>
+</p>
+<div id="sessioninfo" class="collapse">
+```{r session-info, echo=FALSE}
+pander::pander(sessionInfo())
+```
+</div>

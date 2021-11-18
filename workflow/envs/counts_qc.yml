@@ -1,0 +1,24 @@
+name: counts_qc
+channels:
+  - defaults
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base=4.1.1
+  - r-biocmanager
+  - r-broom
+  - r-cowplot
+  - r-ggrepel
+  - r-glue
+  - r-here
+  - r-magrittr
+  - r-matrixStats
+  - r-pander
+  - r-scales
+  - r-tidyverse
+  - r-vctrs
+  - r-yaml
+  - bioconductor-cqn
+  - bioconductor-edgeR
+  - bioconductor-AnnotationHub
+  - bioconductor-ensembldb

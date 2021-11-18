@@ -1,0 +1,648 @@
+---
+title: "Counts: Quality Assessment"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+---
+
+```{r set-knitr-opts, echo=FALSE, child = '../workflow/modules/setup_chunk.Rmd'}
+```
+
+```{r packages}
+library(tidyverse)
+library(magrittr)
+library(yaml)
+library(scales)
+library(pander)
+library(glue)
+library(edgeR)
+library(AnnotationHub)
+library(ensembldb)
+library(broom)
+library(vctrs)
+library(ggrepel)
+library(matrixStats)
+library(cqn)
+library(cowplot)
+```
+
+```{r options}
+panderOptions("table.split.table", Inf)
+panderOptions("big.mark", ",")
+theme_set(theme_bw())
+```
+
+```{r config}
+config <- here::here("config/config.yml") %>%
+  read_yaml()
+sp <- config$ref$species %>%
+  str_replace("(^[a-z])[a-z]*_([a-z]+)", "\\1\\2") %>%
+  str_to_title()
+```
+
+```{r samples}
+key_cols <- config$analysis[c("treat", "batch" ,"other")] %>% 
+  unlist() %>% # Drop empty fields
+  as.list()
+samples <- config$samples %>%
+  here::here() %>%
+  read_tsv() 
+stopifnot(all(unlist(key_cols) %in% colnames(samples)))
+samples <- samples %>% 
+  mutate(
+    across(all_of(as.character(unlist(key_cols))), as.factor),
+    label = paste(!!!syms(key_cols[c("treat", "batch")]), sep = "_")
+    )
+colours <- key_cols %>% 
+  lapply(
+    function(x){
+      n <- length(levels(samples[[x]]))
+      setNames(hcl.colors(n, palette = "Zissou 1"), levels(samples[[x]]))
+    }
+  )
+```
+
+
+# Setup
+
+## Transcriptome Annotatation
+
+```{r ah}
+ah <- AnnotationHub(ask = FALSE) %>%
+  subset(rdataclass == "EnsDb") %>%
+  subset(str_detect(description, as.character(config$ref$release))) %>%
+  subset(genome == config$ref$build)
+stopifnot(length(ah) == 1)
+ensDb <- ah[[1]]
+genesGR <- suppressWarnings(genes(ensDb))
+transGR <- suppressWarnings(transcripts(ensDb))
+txLen <- suppressWarnings(transcriptLengths(ensDb))
+tx2Gene <- transGR %>% 
+  mcols() %>% 
+  as.data.frame() %>% 
+  left_join(
+    mcols(genesGR) %>% 
+      as.data.frame() %>% 
+      dplyr::select(gene_id, gene_name),
+    by = "gene_id"
+  ) %>% 
+  left_join(txLen, by = c("tx_id", "gene_id")) %>% 
+  dplyr::select(gene_id, gene_name, tx_id, tx_id_version, tx_external_name, tx_len, gc_content) %>% 
+  as_tibble()
+```
+
+Gene annotations were again loaded from Ensembl Release `r ensemblVersion(ensDb)`.
+The [previously defined](qc_aligned.html#Annotation_Setup) `GenomicRanges` object containing GC content and Gene Length was also loaded,
+containing information for `r comma(length(genesGR))` genes and `r comma(length(transGR))` transcripts.
+
+## Count Data
+
+```{r load-salmon}
+salmonIn <- here::here("data", "quants", samples$sample) %>% 
+  catchSalmon(verbose = FALSE)
+genecounts_df <- salmonIn$counts %>% 
+  as_tibble(rownames = "tx_id_version") %>% 
+  rename_all(basename) %>% 
+  pivot_longer(
+    all_of(samples$sample),
+    names_to = "sample", 
+    values_to = "counts"
+  ) %>% 
+  dplyr::filter(counts > 0) %>% 
+  left_join(tx2Gene, by = "tx_id_version") %>% 
+  group_by(sample, gene_id) %>% 
+  summarise(counts = sum(counts), .groups= "drop") %>% 
+  pivot_wider(names_from = "sample", values_from = "counts", values_fill = 0) 
+genes_df <- salmonIn$counts %>%
+  .[rowSums(.) > 0,] %>%
+  rownames() %>% 
+  enframe(name = c(), value = "tx_id_version") %>% 
+  left_join(tx2Gene, by = "tx_id_version") %>% 
+  group_by(gene_id, gene_name) %>% 
+  summarise(
+    len = max(tx_len), 
+    gc_content = sum(tx_len*gc_content) / sum(tx_len),
+    tx_id_version = list(unique(tx_id_version)),
+    .groups= "drop"
+  ) %>% 
+  left_join(
+    mcols(genesGR) %>% 
+      as.data.frame() %>% 
+      mutate(range = as.character(genesGR)) %>% 
+      as_tibble(),
+    by =c("gene_id", "gene_name") 
+  ) %>% 
+  dplyr::select(
+    gene_id, gene_name, gene_biotype, tx_id_version, range, entrezid, len, gc_content
+  ) %>% 
+  mutate(entrezid = vctrs::vec_proxy(entrezid))
+```
+
+
+```{r fullDGE}
+dge <- genecounts_df %>% 
+  dplyr::select(gene_id, all_of(samples$sample)) %>% 
+  as.data.frame() %>% 
+  column_to_rownames("gene_id") %>% 
+  DGEList(
+    samples = tibble(sample = colnames(.)) %>% 
+      left_join(samples, by = "sample"),
+    genes = tibble(gene_id = rownames(.)) %>% 
+      left_join(genes_df, by= "gene_id")
+  ) %>%
+  calcNormFactors()
+```
+
+
+Prior to filtering for undetectable genes, transcript-level counts were summarised to genes and loaded as a `DGEList`, incorporating both sample and gene metadata.
+Gene-level GC content was calculated taking the length-weighted average of gc-content from each detected transcript.
+Gene length estimated as the longest transcript with non-zero counts.
+
+Of the `r comma(length(transGR))` transcripts annotated in Ensembl Release `r ensemblVersion(ensDb)`, 
+`r comma(nrow(salmonIn$counts))` were included in the reference transcriptome.
+Of these `r comma(sum(rowSums(salmonIn$counts) == 0))` transcripts received zero counts across all samples, leaving `r comma(sum(rowSums(salmonIn$counts) > 0))` transcripts with `r comma(sum(rowSums(salmonIn$counts) > 0))` transcripts with non-zero counts.
+
+Summarising to genes, `r comma(nrow(genecounts_df))` of the `r comma(length(genesGR))` annotated genes received non-zero counts.
+
+# QC {.tabset}
+
+## Library Sizes
+
+```{r plot-lib-sizes, fig.cap = "Library sizes after summarising to gene-level counts."}
+dge$samples %>% 
+  mutate(lib.size = lib.size / 1e6) %>% 
+  ggplot(
+    aes_string("label", "lib.size", fill = key_cols$treat)
+  ) +
+  geom_col() +
+  facet_wrap(as.formula(paste("~", key_cols$treat)), scales = "free_x") +
+  scale_y_continuous(expand = expansion(c(0, .05))) +
+  scale_fill_manual(values = colours$treat) +
+  labs(
+    x = "Sample", y = "Library Size (millions)",
+    fill = str_to_title(key_cols$treat)
+  )
+```
+
+## Non-Zero Transcripts
+
+```{r plot-detected-trans}
+salmonIn$counts %>% 
+  apply(2, as.logical) %>% 
+  colSums() %>% 
+  enframe(name = "sample", value = "detected") %>% 
+  mutate(sample = basename(sample)) %>% 
+  left_join(samples, by = "sample") %>% 
+  mutate(undetected = nrow(dge) - detected) %>% 
+  ggplot(aes(label, detected, colour = !!sym(key_cols$treat))) +
+  geom_point() +
+  geom_segment(aes(xend = label, yend = 0)) +
+  geom_label_repel(aes(label = comma(detected, 1)), show.legend = FALSE) +
+  scale_y_continuous(labels = comma, expand = expansion(c(0, 0.05))) +
+  scale_colour_manual(values = colours$treat) +
+  labs(
+    x = "Group", y = "Non-Zero Transcripts",
+    colour = str_to_title(key_cols$treat)
+  )
+```
+
+
+## Non-Zero Genes
+
+```{r plot-detected-genes, fig.cap = "Number of detected genes per sample after summarising to gene-level counts. Detected genes for each sample were considered as any with a non-zero count."}
+dge$counts %>% 
+  apply(MARGIN = 2, function(x) sum(as.logical(x))) %>% 
+  enframe(name = "sample", value = "detected") %>% 
+  mutate(sample = basename(sample)) %>% 
+  left_join(samples, by = "sample") %>% 
+  mutate(undetected = nrow(dge) - detected) %>% 
+  ggplot(aes(label, detected, colour = !!sym(key_cols$treat))) +
+  geom_point() +
+  geom_segment(aes(xend = label, yend = 0)) +
+  geom_label_repel(aes(label = comma(detected, 1)), show.legend = FALSE) +
+  scale_y_continuous(labels = comma, expand = expansion(c(0, 0.05))) +
+  scale_colour_manual(values = colours$treat) +
+  labs(
+    x = "Group", y = "Non-Zero Genes",
+    colour = str_to_title(key_cols$treat)
+  )
+```
+
+## Consistently Detected Genes
+
+```{r plot-detected, fig.height=6, fig.cap = "Number of detected genes setting various thresholds for the minimum number of samples requiring > 0 counts. Genes marked as absent consistently had zero counts for all transcripts in all samples. The dashed vertical line indicates using the smallest group size as the minimum number of samples."}
+min_group <- min(table(samples[[key_cols$treat]]))
+dge$counts %>%
+  is_greater_than(0) %>%
+  rowSums() %>%
+  table() %>%
+  enframe(name = "n_samples", value = "n_genes") %>%
+  mutate(
+    n_samples = as.integer(n_samples),
+    n_genes = as.integer(n_genes),
+  ) %>%
+  arrange(desc(n_samples)) %>%
+  mutate(
+    Detectable = cumsum(n_genes),
+    Undetectable = nrow(dge) - Detectable,
+    Absent = length(genesGR) - nrow(dge)
+  ) %>% 
+  pivot_longer(
+    cols = all_of(c("Detectable", "Undetectable", "Absent")),
+    names_to = "Status",
+    values_to = "Number of Genes"
+  ) %>%
+  dplyr::rename(
+    `Number of Samples` = n_samples,
+  ) %>%
+  mutate(
+    Status = factor(Status, levels = c("Absent", "Undetectable", "Detectable"))
+  ) %>% 
+  ggplot(aes(as.factor(`Number of Samples`), `Number of Genes`, fill = fct_rev(Status))) +
+  geom_col() +
+  geom_label(
+    aes(y = y, label = comma(`Number of Genes`)),
+    data = . %>% 
+      dplyr::filter(`Number of Genes` > 0, Status != "Absent") %>% 
+      mutate(
+        y = case_when(
+          Status == "Undetectable" ~ 0.5*`Number of Genes` + length(genesGR) - nrow(dge),
+          Status == "Detectable" ~ 0.95*length(genesGR)
+        )
+      ),
+    fill = rgb(1, 1, 1, 0.8),
+    show.legend = FALSE
+  ) +
+  geom_vline(
+    xintercept = min_group + 0.5,
+    linetype = 2,
+    colour = "grey50"
+  ) +
+  scale_y_continuous(labels = comma, expand = expansion(c(0, 0.05))) +
+  scale_fill_viridis_d(option = "cividis", direction = -1, alpha = 0.9) +
+  labs(x = "Samples > 0", fill = "Status")
+```
+
+## Transcript Diversity
+
+```{r plot-trans-diversity, fig.cap = "Summary of the transcripts with non-zero counts per gene."}
+dge$genes %>% 
+  as_tibble() %>% 
+  mutate(n_tx = vapply(tx_id_version, length, integer(1))) %>% 
+  arrange(n_tx) %>% 
+  mutate(n_genes = seq_along(n_tx)) %>% 
+  ggplot(aes(n_tx, n_genes)) +
+  geom_line() +
+  coord_cartesian(xlim = c(1, 30)) +
+  scale_x_continuous(breaks = seq(0, 40, by = 2)) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    x = "Non-Zero Transcripts / Gene",
+    y = "Cumulative Number of Genes"
+  )
+```
+
+
+## PCA
+
+```{r plot-pca-raw, fig.cap = "PCA analysis on logCPM values before normalisation or filtering showing the first two components only."}
+pca <- dge %>% 
+  cpm(log= TRUE) %>% 
+  t() %>% 
+  prcomp() 
+pca %>% 
+  tidy() %>% 
+  dplyr::rename(sample = row) %>% 
+  left_join(samples, by = "sample") %>% 
+  dplyr::filter(PC %in% 1:2) %>% 
+  pivot_wider(names_from = "PC", names_prefix = "PC", values_from = "value") %>% 
+  ggplot(
+    aes(PC1, PC2, colour = !!sym(key_cols$treat))
+  ) +
+  geom_point() +
+  geom_text_repel(aes(label = label), show.legend = FALSE) +
+  scale_colour_manual(values = colours$treat) +
+  labs(
+    x = glue("PC1 ({percent(pca$sdev[[1]]^2 / sum(pca$sdev^2), 0.1)})"),
+    y = glue("PC2 ({percent(pca$sdev[[2]]^2 / sum(pca$sdev^2), 0.1)})"),
+    colour = str_to_title(key_cols$treat)
+  )
+```
+
+## GC Content & Length Artefacts
+
+```{r plot-pca-gc-length, fig.cap = "Average contribution of genes to PC1 and PC2 when binning genes by GC content and length. Average contribution of all genes to PC1 & PC2 is shown for each bin, with any strong bias shown as more solid colours. T-tests for a non-zero contribution within each bin were conducted with Bonferroni-adjusted p-values used to indicate overal significance. Any regions showing consistent bias across bins of similar gene length or GC content will indicate that either of these parameters is contributing significantly to the observed variability and conditional-quantile normalisation may be preferred to the standard TMM."}
+dge$genes %>% 
+  as_tibble() %>%
+  mutate(
+    bin_length = cut(
+      x = len,
+      labels = seq_len(10),
+      breaks = quantile(len, probs = seq(0, 1, length.out = 11)),
+      include.lowest = TRUE
+    ),
+    bin_gc = cut(
+      x = gc_content,
+      labels = seq_len(10),
+      breaks = quantile(gc_content, probs = seq(0, 1, length.out = 11)),
+      include.lowest = TRUE
+    ),
+    bin = paste(bin_gc, bin_length, sep = "_")
+  ) %>%
+  dplyr::select(gene_id, contains("bin")) %>%
+  mutate(
+    PC1 = pca$rotation[gene_id, "PC1"],
+    PC2 = pca$rotation[gene_id, "PC2"]
+  ) %>%
+  pivot_longer(
+    cols = c("PC1", "PC2"), names_to = "PC", values_to = "value"
+  ) %>%
+  group_by(PC, bin_gc, bin_length, bin) %>%
+  summarise(
+    Size = n(),
+    mean = mean(value),
+    sd = sd(value),
+    t = t.test(value)$statistic,
+    p = t.test(value)$p.value,
+    adjP = p.adjust(p, method = "bonf"),
+    .groups = "drop"
+  ) %>%
+  ggplot(
+    aes(bin_length, bin_gc, colour = t, alpha = -log10(adjP), size = Size)
+  ) +
+  geom_point() +
+  facet_wrap(~PC) +
+  scale_colour_gradient2() +
+  scale_size_continuous(range = c(1, 10)) +
+  labs(
+    x = "Representative Gene Length",
+    y = "GC Content",
+    size = "Group\nSize",
+    alpha = expression(paste(-log[10], p[adj]))) +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) 
+```
+
+# Normalisation
+
+```{r genes2keep}
+genes2Keep <- cpm(dge) %>% 
+  is_greater_than(config$analysis$mincpm) %>% 
+  rowSums() %>% 
+  is_weakly_greater_than(min_group)
+```
+
+
+## Before Normalisation {.tabset}
+
+Genes were defined as detected if exceeding > `r config$analysis$mincpm`CPM in at least `r min_group` samples, leading to
+`r comma(sum(genes2Keep))` genes being retained as confidently expressed prior to normalisation.
+
+### Density Plots
+
+```{r plot-density-all, fig.cap = "Distributions of logCPM values for all non-zero genes, and those retained as detected using the above CPM threshold. The number of genes in each category is also shown."}
+list(
+  All = cpm(dge, log = TRUE) %>% 
+    as.data.frame() %>% 
+    mutate(which = "All Genes")
+  ,
+  Detected = cpm(dge, log = TRUE)[genes2Keep, ] %>% 
+    as.data.frame() %>% 
+    mutate(which = "Detected Genes")
+) %>% 
+  bind_rows() %>% 
+  pivot_longer(
+    cols = all_of(samples$sample), names_to = "sample", values_to = "logCPM"
+  )%>% 
+  left_join(samples, by = "sample") %>% 
+  ggplot(
+    aes_string(
+      "logCPM", colour = key_cols$treat, linetype = key_cols$batch,
+      group = key_cols$other
+    )        
+  ) +
+  geom_density() +
+  facet_wrap(~which) +
+  geom_text(
+    aes(x, y, label = lab),
+    data = . %>% 
+      group_by(which) %>% 
+      summarise(
+        x = 0.85*max(logCPM),
+        y = 0.85*max(density(logCPM)$y),
+        lab = glue("n = {comma(n() / ncol(dge))}"),
+        .groups = "drop"
+      ) %>% 
+      mutate(y = max(y)),
+    inherit.aes = FALSE
+  ) +
+  scale_colour_manual(values = colours$treat) +
+  labs(
+    y = "Density", colour = str_to_title(key_cols$treat), 
+    linetype = str_to_title(key_cols$batch)
+  )
+```
+
+### RLE
+
+```{r plot-rle-pre, fig.cap = "Relative Log Expression. Any deviations from zero indicate potential batch effects."}
+cpm(dge, log = TRUE) %>% 
+  .[genes2Keep, ] %>%
+  as.data.frame() %>% 
+  pivot_longer(
+    cols = everything(), names_to = "sample", values_to = "logCPM"
+  ) %>% 
+  left_join(samples) %>% 
+  group_by(sample) %>% 
+  mutate(RLE = logCPM - median(logCPM)) %>% 
+  ggplot(aes(label, RLE, fill = !!sym(key_cols$batch))) +
+  geom_boxplot(alpha = 0.9) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  facet_wrap(as.formula(paste("~", key_cols$treat)), scales = "free_x") +
+  scale_fill_manual(values = colours$batch) +
+  labs(
+    x = "Sample",
+    fill = str_to_title(key_cols$batch),
+  )
+```
+
+## After Normalisation {.tabset}
+
+```{r cqn}
+cqn <- dge[genes2Keep,,keep.lib.sizes = FALSE] %>% 
+  with(
+    suppressWarnings(
+      cqn(
+        counts = counts,
+        x = genes$gc_content,
+        lengths = genes$len
+      )
+    )
+  )
+dgeNorm <- dge[genes2Keep,,keep.lib.sizes = FALSE]
+dgeNorm$offset <- cqn$offset
+logCPM <- cqn$y + cqn$offset
+```
+
+### CQN Diagnostic Plots
+
+```{r plot-cqn, fig.cap = 'Diagnostic plots from CQN. Any divergence between samples indicates a range of either GC content or gene length where some bias was observed.'}
+a <- cqn$func1 %>%
+  as.data.frame() %>%
+  mutate(x = cqn$grid1) %>%
+  pivot_longer(
+    cols = any_of(colnames(dge)),
+    names_to = "sample",
+    values_to = "QR fit"
+  ) %>%
+  left_join(dge$samples, by = "sample") %>%
+  ggplot(
+    aes_string(
+      "x", "`QR fit`", linetype = key_cols$treat, colour = key_cols$batch,
+      group = key_cols$other
+    )
+  ) +
+  geom_line() +
+  scale_colour_manual(values = colours$batch) +
+  labs(
+    x = "GC content",
+    linetype = str_to_title(key_cols$treat), 
+    colour = str_to_title(key_cols$batch)
+  )
+b <- cqn$func2 %>%
+  as.data.frame() %>%
+  mutate(x = cqn$grid2) %>%
+  pivot_longer(
+    cols = any_of(colnames(dge)),
+    names_to = "sample",
+    values_to = "QR fit"
+  ) %>%
+  left_join(dge$samples, by = "sample") %>%
+  ggplot(
+    aes_string(
+      "x", "`QR fit`", linetype = key_cols$treat, colour = key_cols$batch,
+      group = key_cols$other
+    )
+  ) +
+  geom_line() +
+  scale_colour_manual(values= colours$batch) +
+  labs(
+    x = expression(paste(log[10], " Gene Length (kb)")),
+    linetype = str_to_title(key_cols$treat), 
+    colour = str_to_title(key_cols$batch)
+  )
+plot_grid(
+  a + theme(legend.position = "none"), 
+  b + theme(legend.position = "none"),
+  get_legend(a),
+  labels = c("A", "B"),
+  nrow = 1,
+  rel_widths = c(3, 3, 1)
+)
+```
+
+### Density
+
+```{r plot-density-norm, fig.cap = "logCPM densities before and after Conditional-Quantile Normalisation."}
+list(
+  pre = cpm(dgeNorm$counts, log = TRUE) %>% 
+    as.data.frame() %>% 
+    mutate(status = "Raw") ,
+  post = logCPM %>% 
+    as.data.frame() %>% 
+    mutate(status = "CQ-Normalised")
+) %>% 
+  bind_rows() %>% 
+  mutate(status = fct_rev(status)) %>% 
+  pivot_longer(
+    cols = all_of(samples$sample), names_to = "sample", values_to = "logCPM"
+  ) %>% 
+  left_join(samples, by = "sample") %>% 
+  ggplot(
+    aes_string(
+      "logCPM", colour = key_cols$treat, linetype = key_cols$batch,
+      group = key_cols$other
+    )       
+  ) +
+  geom_density() +
+  facet_wrap(~status) +
+  scale_colour_manual(values = colours$treat) +
+  labs(
+    y = "Density", colour = str_to_title(key_cols$treat), 
+    linetype = str_to_title(key_cols$batch)
+  )
+```
+
+
+### PCA
+
+```{r plot-pca-post, fig.cap = "PCA on normalised logCPM values"}
+pcaPost <- logCPM %>%
+  .[rowVars(.) > 0,] %>% 
+  t() %>%
+  prcomp() 
+pcaPost %>%
+  tidy() %>% 
+  dplyr::rename(sample = row) %>% 
+  left_join(samples, by = "sample") %>% 
+  dplyr::filter(PC %in% 1:2) %>% 
+  pivot_wider(names_from = "PC", names_prefix = "PC", values_from = "value") %>% 
+  ggplot(
+    aes(PC1, PC2, colour = !!sym(key_cols$treat))
+  ) +
+  geom_point() +
+  geom_text_repel(aes(label = label), show.legend = FALSE) +
+  scale_colour_manual(values = colours$treat) +
+  labs(
+    x = glue("PC1 ({percent(pcaPost$sdev[[1]]^2 / sum(pcaPost$sdev^2), 0.1)})"),
+    y = glue("PC2 ({percent(pcaPost$sdev[[2]]^2 / sum(pcaPost$sdev^2), 0.1)})"),
+    colour = str_to_title(key_cols$treat)
+  )
+```
+
+
+### RLE
+
+```{r plot-rle-post, fig.cap = "Relative Log Expression. Any deviations from zero indicate potential batch effects which have not been addressed during normalisation."}
+logCPM %>%
+  as.data.frame() %>% 
+  pivot_longer(
+    cols = everything(), names_to = "sample", values_to = "logCPM"
+  ) %>% 
+  left_join(samples) %>% 
+  group_by(sample) %>% 
+  mutate(RLE = logCPM - median(logCPM)) %>% 
+  ggplot(aes(label, RLE, fill = !!sym(key_cols$batch))) +
+  geom_boxplot(alpha = 0.9) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  facet_wrap(as.formula(paste("~", key_cols$treat)), scales = "free_x") +
+  scale_fill_manual(values = colours$batch) +
+  labs(
+    x = "Sample",
+    fill = str_to_title(key_cols$batch),
+  )
+```
+
+# Data Export
+
+After removal of undetectable genes and normalisation, the data was exported as a `DGEList` for downstream analysis.
+CQ-normalised logCPM values were also exported as a tsv file.
+
+```{r data-export}
+write_rds(
+  dgeNorm, here::here("data", "quants", "dgeNorm.rds"), compress = "gz"
+)
+logCPM %>% 
+  as_tibble(rownames = "gene_id") %>% 
+  write_tsv(here::here("data", "quants", "logCPM.tsv"))
+```
+
+<button type="button" class="btn btn-default btn-sessioninfo" data-toggle="collapse" data-target="#sessioninfo" style="display: block;">
+<span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span> Session information
+</button>
+</p>
+<div id="sessioninfo" class="collapse">
+```{r session-info, echo=FALSE}
+pander::pander(sessionInfo())
+```
+</div>

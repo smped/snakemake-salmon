@@ -1,0 +1,16 @@
+name: Diagrammer
+channels:
+  - defaults
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base=4.1.1
+  - r-biocmanager
+  - r-diagrammer
+  - r-glue
+  - r-here
+  - r-pander
+  - r-remotes
+  - r-scales
+  - r-tidyverse
+  - r-yaml

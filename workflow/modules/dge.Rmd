@@ -1,0 +1,356 @@
+```{r treat_levels, echo = FALSE, eval = FALSE}
+## This should be placed here when creating the template
+## treat_levels <- c("siCtrl", "siTFAP2B") 
+```
+
+```{r packages}
+library(tidyverse)
+library(magrittr)
+library(yaml)
+library(scales)
+library(pander)
+library(glue)
+library(edgeR)
+library(ggrepel)
+library(matrixStats)
+library(DT)
+```
+
+```{r options}
+panderOptions("table.split.table", Inf)
+panderOptions("big.mark", ",")
+theme_set(theme_bw())
+```
+
+```{r config}
+config <- here::here("config/config.yml") %>%
+  read_yaml()
+key_cols <- config$analysis[c("treat", "batch" ,"other")] %>% 
+  unlist() %>% # Drop empty fields
+  as.list()
+```
+
+```{r load-data}
+dgeNorm <- here::here("data", "quants", "dgeNorm.rds") %>% 
+  read_rds() %>% 
+  .[.$samples[[key_cols$treat]] %in% treat_levels,]
+samples <- as_tibble(dgeNorm$samples) %>% 
+  dplyr::select(
+    sample, label, any_of(as.character(unlist(key_cols)))
+  )
+colours <- key_cols %>% 
+  lapply(
+    function(x){
+      n <- length(levels(samples[[x]]))
+      setNames(hcl.colors(n, palette = "Zissou 1"), levels(samples[[x]]))
+    }
+  )
+logCPM <- here::here("data", "quants", "logCPM.tsv") %>% 
+  read_tsv() %>% 
+  dplyr::select(gene_id, all_of(samples$sample))
+```
+
+# Analysis
+
+```{r fit}
+fdr_alpha <- config$analysis$alpha
+lambda <- log2(config$analysis$fc)
+fm <- as.formula(paste("~", key_cols$treat))
+if (!is.null(key_cols$batch)) {
+  fm <- as.formula(paste("~ 0", key_cols$batch, key_cols$treat, sep = " + "))
+}
+X <- model.matrix(fm, data = dgeNorm$samples) %>% 
+  set_colnames(str_remove(colnames(.), key_cols$treat))
+dgeNorm <- estimateDisp(dgeNorm, design = X, robust = TRUE)
+fit <- glmQLFit(dgeNorm, design = X)
+topTable <- glmTreat(fit, coef = treat_levels[[2]], lfc = lambda) %>%
+  topTags(n = Inf) %>%
+  .[["table"]] %>%
+  as_tibble() %>%
+  mutate(
+    rankingStat = -sign(logFC)*log10(PValue),
+    signedRank = rank(rankingStat),
+    DE = FDR < fdr_alpha
+  )
+de <- dplyr::filter(topTable, DE)$gene_id
+up <- dplyr::filter(topTable, DE, logFC > 0)$gene_id
+down <- dplyr::filter(topTable, DE, logFC < 0)$gene_id
+```
+
+In order to detect genes which respond to `r treat_levels[[2]]` the Null Hypothesis ($H_0$) was specified to be a range around zero, instead of the conventional point-value.
+
+$$
+H_0: -\lambda \leq \mu \leq \lambda \\
+\text{Vs.} \\
+H_A: |\mu| > \lambda
+$$
+This characterises $H_0$ as being a range instead of being the singularity 0, with $\mu$ representing the true mean logFC.
+The default value of $\lambda = \log_2 `r 2^lambda` = `r round(lambda, 3)`$ was chosen indicating that genes showing less than `r percent(2^lambda - 1)` change in expression were not of interest.
+This removes any requirement for *post hoc* filtering based on logFC during which FDR control may not be preserved.
+
+# Results {.tabset}
+
+Using the approach described above, `r length(de)` genes were considered as DE to an FDR of `r fdr_alpha`.
+Of these, `r length(up)` were up-regulated with the remaining `r length(down)` being down-regulated.
+
+## Top Table
+
+```{r topTable}
+cp <- htmltools::tags$caption(
+  glue(
+    "All {comma(length(de))} genes considered as DE using the criteria of an ",
+    "FDR-adjusted p-value < {fdr_alpha}. {comma(length(up))} showed evidence ",
+    "of increased expression in {treat_levels[[2]]} whilst ", 
+    "{comma(length(down))} showed evidence of decreased expression.",
+    "The remaining {comma(nrow(dgeNorm) - length(de))} detected genes were ",
+    "not found to be differentially expressed."
+  )
+)
+topTable %>%
+  dplyr::filter(DE) %>%
+  mutate(
+    Chromosome = str_replace_all(range, "^([^:]+):.+", "\\1"),
+    Chromosome = factor(
+      Chromosome, str_sort(unique(Chromosome), numeric = TRUE)
+    )
+  ) %>% 
+  dplyr::select(
+    ID = gene_id, Gene = gene_name, Chromosome,
+    logFC, logCPM, PValue, FDR
+  ) %>%
+  datatable(
+    rownames = FALSE, 
+    filter = "top",
+    options = list(
+      columnDefs = list(
+        list(
+          targets =6,
+          render = JS(
+            "function(x) {
+                  if (typeof x == 'string') {
+                    out  = x;
+                  } else {
+                    if (x < 0.001) {
+                      out = Number.parseFloat(x).toExponential(2);
+                    } else {
+                      out = Number.parseFloat(x).toFixed(3);
+                    }
+                  }
+                  return out
+                }"
+          )
+        )
+      )
+    ),
+    caption = cp
+  ) %>%
+  formatRound(
+    columns = c("logFC", "logCPM"), digits = 2
+  ) %>% 
+  formatSignif(
+    columns = c("PValue", "FDR"),
+    digits = 3
+  ) %>% 
+  formatStyle(
+    "logFC",
+    background = styleInterval(
+      c(
+        seq(min(topTable$logFC), 0, length.out = 25),
+        seq(0, max(topTable$logFC), length.out = 25)
+      ),
+      colorRampPalette(c(rgb(0.2, 0.3, 0.6), "white", rgb(0.8, 0.2, 0)))(51)
+    )
+  ) %>% 
+  formatStyle(
+    "logCPM", background = styleColorBar(range(topTable$logCPM),"#FFE9EA")
+  )
+```
+
+
+## MA Plot
+
+```{r plot-ma, fig.cap = glue("MA plot for the comparison between {treat_levels[[2]]} and {treat_levels[[1]]}. The 20 genes with the most extreme fold-change are labelled.")}
+topTable %>%
+  ggplot(aes(logCPM, logFC)) +
+  geom_point(aes(colour = DE),alpha = 0.5) +
+  geom_text_repel(
+    aes(label = gene_name, colour = DE),
+    data = . %>%
+      arrange(desc(abs(logFC))) %>% 
+      dplyr::slice(1:20),
+    show.legend = FALSE
+  ) +
+  geom_smooth(se = FALSE) +
+  scale_colour_manual(values = c("grey50", "red")) +
+  theme(legend.position = "none")
+```
+
+## Volcano Plot
+
+```{r plot-volcano, fig.cap = glue("Volcano plot for the comparison between {treat_levels[[2]]} and {treat_levels[[1]]}. The 10 most highly-ranked genes by p-value are labelled.")}
+topTable %>%
+  ggplot(aes(logFC, -log10(PValue))) +
+  geom_point(aes(colour = DE),alpha = 0.5) +
+  geom_text_repel(
+    aes(label = gene_name, colour = DE),
+    data = . %>%
+      arrange(PValue) %>% 
+      dplyr::slice(1:10),
+    show.legend = FALSE
+  ) +
+  scale_colour_manual(values = c("grey50", "red")) +
+  theme(legend.position = "none")
+```
+
+## Most Significant Up-Regulated Genes
+
+```{r plot-top-up, fig.cap = "Most highly-ranked up-regulated genes by p-value. Genes considered to be differentially expressed are indicated with an asterisk."}
+if (!is.null(key_cols$batch)) {
+  plot_aes <- aes(!!sym(key_cols$batch), cpm + 1, fill = !!sym(key_cols$treat))
+  plot_theme <- theme()
+} else {
+  plot_aes <- aes(label, cpm + 1, fill = !!sym(key_cols$treat))
+  plot_theme <- theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+  )
+}
+y_labels <- function(x) comma(x, accuracy = 1)
+topTable %>% 
+  dplyr::filter(logFC > 0) %>% 
+  arrange(PValue) %>% 
+  dplyr::slice(1:20) %>% 
+  dplyr::select(gene_id, gene_name, DE) %>% 
+  mutate(
+    gene_name = ifelse(gene_name == "", gene_id, gene_name),
+    gene_name = ifelse(DE, paste0(gene_name, "*"), gene_name)
+  ) %>% 
+  left_join(logCPM, by = "gene_id") %>% 
+  pivot_longer(
+    cols= all_of(samples$sample), names_to = "sample", values_to = "logCPM"
+  ) %>% 
+  mutate(cpm = 2^logCPM) %>% 
+  left_join(samples, by = "sample")%>% 
+  ggplot(plot_aes) +
+  geom_col(position = "dodge") +
+  facet_wrap(~gene_name) + 
+  scale_fill_manual(values = colours$treat) +
+  scale_y_log10(labels = y_labels, expand = expansion(c(0, 0.05))) +
+  labs(
+    x = ifelse(is.null(key_cols$batch), "Sample", str_to_title(key_cols$batch)), 
+    y = "CPM + 1", fill = str_to_title(key_cols$treat)) +
+  plot_theme
+```
+
+## Most Significant Down-Regulated Genes
+
+```{r plot-top-down, fig.cap = "Most highly-ranked down-regulated genes by p-value. Genes considered to be differentially expressed are indicated with an asterisk."}
+topTable %>% 
+  dplyr::filter(logFC < 0) %>% 
+  arrange(PValue) %>% 
+  dplyr::slice(1:20) %>% 
+  dplyr::select(gene_id, gene_name, DE) %>% 
+  mutate(
+    gene_name = ifelse(gene_name == "", gene_id, gene_name),
+    gene_name = ifelse(DE, paste0(gene_name, "*"), gene_name)
+  ) %>% 
+  left_join(logCPM, by = "gene_id") %>% 
+  pivot_longer(
+    cols= all_of(samples$sample), names_to = "sample", values_to = "logCPM"
+  ) %>% 
+  mutate(cpm = 2^logCPM) %>% 
+  left_join(samples, by = "sample")%>% 
+  ggplot(plot_aes) +
+  geom_col(position = "dodge") +
+  facet_wrap(~gene_name) + 
+  scale_fill_manual(values = colours$treat) +
+  scale_y_log10(labels = y_labels, expand = expansion(c(0, 0.05))) +
+  labs(
+    x = ifelse(is.null(key_cols$batch), "Sample", str_to_title(key_cols$batch)), 
+    y = "CPM + 1", fill = str_to_title(key_cols$treat)) +
+  plot_theme
+```
+
+## Most Extreme Up-Regulated Genes
+
+```{r plot-most-up, fig.cap = "Most highly-ranked up-regulated genes by logFC. Genes considered to be differentially expressed are indicated with an asterisk."}
+topTable %>% 
+  arrange(desc(logFC)) %>% 
+  dplyr::slice(1:20) %>%
+  dplyr::select(gene_id, gene_name, DE) %>% 
+  mutate(
+    gene_name = ifelse(gene_name == "", gene_id, gene_name),
+    gene_name = ifelse(DE, paste0(gene_name, "*"), gene_name)
+  ) %>% 
+  left_join(logCPM, by = "gene_id") %>% 
+  pivot_longer(
+    cols= all_of(samples$sample), names_to = "sample", values_to = "logCPM"
+  ) %>% 
+  mutate(cpm = 2^logCPM) %>% 
+  left_join(samples, by = "sample")%>% 
+  ggplot(plot_aes) +
+  geom_col(position = "dodge") +
+  facet_wrap(~gene_name) + 
+  scale_fill_manual(values = colours$treat) +
+  scale_y_log10(labels = y_labels, expand = expansion(c(0, 0.05))) +
+  labs(
+    x = ifelse(is.null(key_cols$batch), "Sample", str_to_title(key_cols$batch)), 
+    y = "CPM + 1", fill = str_to_title(key_cols$treat)) +
+  plot_theme
+```
+
+## Most Extreme Down-Regulated Genes
+
+```{r plot-most-down, fig.cap = "Most highly-ranked down-regulated genes by logFC. Genes considered to be differentially expressed are indicated with an asterisk."}
+topTable %>% 
+  arrange(logFC) %>% 
+  dplyr::slice(1:20) %>% 
+  dplyr::select(gene_id, gene_name, DE) %>% 
+  mutate(
+    gene_name = ifelse(gene_name == "", gene_id, gene_name),
+    gene_name = ifelse(DE, paste0(gene_name, "*"), gene_name)
+  ) %>% 
+  left_join(logCPM, by = "gene_id") %>% 
+  pivot_longer(
+    cols= all_of(samples$sample), names_to = "sample", values_to = "logCPM"
+  ) %>% 
+  mutate(cpm = 2^logCPM) %>% 
+  left_join(samples, by = "sample")%>% 
+  ggplot(plot_aes) +
+  geom_col(position = "dodge") +
+  facet_wrap(~gene_name) + 
+  scale_fill_manual(values = colours$treat) +
+  scale_y_log10(labels = y_labels, expand = expansion(c(0, 0.05))) +
+  labs(
+    x = ifelse(is.null(key_cols$batch), "Sample", str_to_title(key_cols$batch)), 
+    y = "CPM + 1", fill = str_to_title(key_cols$treat)) +
+  plot_theme
+```
+
+# Data Export
+
+
+```{r export}
+tsv_out <- glue("{treat_levels[[1]]}_{treat_levels[[2]]}_topTable.tsv")
+topTable %>% 
+  mutate(
+    across(
+      all_of(c("tx_id_version", "entrezid")),
+      function(x) vapply(x, paste, character(1), collapse = "; ")
+    )
+  ) %>% 
+  write_tsv(
+    here::here("docs", tsv_out)
+  )
+```
+
+The final set of results was exported as [`r tsv_out`](`r tsv_out`).
+
+<button type="button" class="btn btn-default btn-sessioninfo" data-toggle="collapse" data-target="#sessioninfo" style="display: block;">
+<span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span> Session information
+</button>
+</p>
+<div id="sessioninfo" class="collapse">
+```{r session-info, echo=FALSE}
+pander::pander(sessionInfo())
+```
+</div>

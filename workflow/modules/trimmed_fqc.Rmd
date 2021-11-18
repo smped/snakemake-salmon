@@ -1,0 +1,284 @@
+---
+title: "QC On Trimmed Data"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+---
+
+```{r set-knitr-opts, echo=FALSE, child = '../workflow/modules/setup_chunk.Rmd'}
+```
+
+```{r packages}
+library(ngsReports)
+library(tidyverse)
+library(yaml)
+library(scales)
+library(pander)
+library(glue)
+library(cowplot)
+library(plotly)
+```
+
+```{r options}
+panderOptions("table.split.table", Inf)
+panderOptions("big.mark", ",")
+theme_set(theme_bw())
+```
+
+```{r config}
+config <- here::here("config/config.yml") %>%
+  read_yaml()
+suffix <- paste0(config$tags$tag, config$suffix)
+sp <- config$ref$species %>%
+  str_replace("(^[a-z])[a-z]*_([a-z]+)", "\\1\\2") %>%
+  str_to_title()
+```
+
+```{r samples}
+samples <- config$samples %>%
+  here::here() %>%
+  read_tsv() %>%
+  mutate(
+    R1 = paste0(sample, config$tags$r1),
+    R2 = paste0(sample, config$tags$r2)
+  ) %>% 
+  pivot_longer(
+    all_of(c("R1", "R2")),
+    names_to = "pair",
+    values_to = "Filename"
+  ) %>% 
+  mutate(Filename = paste0(Filename, suffix))
+```
+
+```{r check_config}
+config$analysis <- config$analysis %>%
+  lapply(intersect, y = colnames(samples)) %>%
+  .[vapply(., length, integer(1)) > 0]
+```
+
+```{r add_columns}
+if (length(config$analysis)) {
+  samples <- samples %>%
+    unite(
+      col = group, 
+      any_of(as.character(unlist(config$analysis))), 
+      sep = "_", remove = FALSE
+    ) 
+} else {
+  samples$group <- samples$Filename
+}
+```
+
+```{r group_cols}
+group_cols <- hcl.colors(
+  n = length(unique(samples$group)), 
+  palette = "Zissou 1"
+  ) %>%
+  setNames(unique(samples$group))
+```
+
+
+```{r setFigureSizes}
+fh <- round(6 + nrow(samples) / 15, 0)
+```
+
+# Quality Assessment on Trimmed Data
+
+In the workflow, trimming was performed using the tool `AdapterRemoval` with the settings:
+
+- Adapter Sequence: `r config$trimming$adapter1`
+- Minimum length after trimming: `r config$trimming$minlength`
+`r if (grepl("trimqualities", config$trimming$extra)) paste("- Minimum quality score to retain:", config$trimming$minqual)`
+- Maximum allowable number of `N` bases to allow: `r config$trimming$maxns`
+
+## Overall Summary
+
+```{r bothFqc}
+rawFqc <- here::here("data/raw/FastQC") %>%
+  list.files(pattern = "zip", full.names = TRUE) %>%
+  FastqcDataList() %>%
+  .[fqName(.) %in% samples$Filename]
+trimFqc <- here::here("data/trimmed/FastQC") %>%
+  list.files(pattern = "zip", full.names = TRUE) %>%
+  FastqcDataList() %>%
+  .[fqName(.) %in% samples$Filename]
+```
+
+After trimming, the library showing the highest level of possible adapter content contained `r getModule(trimFqc, "Adapter") %>% pivot_longer(-any_of(c("Filename", "Position"))) %>% group_by(Filename, Position) %>% summarise(Total = sum(value)) %>% summarise(max = max(Total)) %>% dplyr::filter(max == max(max)) %>% pull(max) %>% percent(accuracy = 0.01)` of reads as containing possible adapter sequences.
+
+
+```{r plotSummary, fig.height=fh, fig.cap = "*Comparison of FastQC summaries before and after trimming*"}
+bind_rows(
+  getSummary(rawFqc) %>% mutate(data = "Raw"),
+  getSummary(trimFqc) %>% mutate(data = "Trimmed"),
+) %>% 
+  left_join(samples) %>% 
+  ggplot(aes(Category, fct_rev(data), fill = Status)) +
+  geom_tile() +
+  facet_grid(sample~pair) +
+  scale_fill_manual(values = getColours(pwf)[c("PASS", "WARN", "FAIL")]) +
+  theme(
+    axis.text.x = element_text(angle= 90, hjust = 1, vjust = 0.5),
+    strip.text.y = element_text(angle = 0)
+  )
+```
+
+## Library Sizes
+
+```{r compareLibSizes}
+readTotals(rawFqc) %>%
+  rename(Raw = Total_Sequences) %>%
+  left_join(
+    readTotals(trimFqc) %>%
+      rename(Trimmed = Total_Sequences)
+  ) %>%
+  mutate(
+    Remaining = Trimmed / Raw,
+    Filename = str_remove_all(Filename, suffix)
+  ) %>%
+  summarise(
+    across(c(Remaining, Trimmed), list(min = min, mean = mean, max = max))
+  ) %>%
+  pivot_longer(everything()) %>%
+  separate(
+    name, into = c("Type", "Summary Statistic")
+  ) %>%
+  pivot_wider(names_from = Type, values_from = value) %>%
+  mutate(
+    Remaining = percent(Remaining, accuracy = 0.1),
+    `Summary Statistic` = str_to_title(`Summary Statistic`)
+  ) %>%
+  rename(Reads = Trimmed) %>%
+  pander(
+    caption = "*Summary statistics showing the results after trimming*"
+  )
+```
+
+```{r plot-lib-sizes, fig.height=fh, fig.cap = "Comparison of library sizes before and after trimming."}
+readTotals(rawFqc) %>%
+  rename(Raw = Total_Sequences) %>%
+  left_join(
+    readTotals(trimFqc) %>%
+      rename(Retained = Total_Sequences),
+    by = "Filename"
+  ) %>% 
+  left_join(samples, by = "Filename") %>% 
+  distinct(sample, .keep_all = TRUE) %>% 
+  mutate(Discarded = Raw - Retained) %>% 
+  pivot_longer(
+    cols = all_of(c("Retained", "Discarded")),
+    names_to = "Status",
+    values_to = "Reads"
+  ) %>% 
+  ggplot(aes(fct_rev(sample), Reads/1e6, fill = Status)) + 
+  geom_col() +
+  facet_grid(treat~. , scales = "free_y", space = "free_y") +
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  scale_fill_viridis_d(option = "cividis", direction = -1) +
+  labs(
+    x = "Sample", y = "Reads (millions)"
+  ) +
+  coord_flip()
+```
+
+
+## Sequence Length Distribution
+
+```{r plotLengthDist, fig.cap="*Distribution of read lengths after trimming*"}
+ggplotly(
+  getModule(trimFqc, "Sequence_Length") %>%
+    group_by(Filename) %>%
+    mutate(
+      `Cumulative Total` = cumsum(Count),
+      `Cumulative Percent` = percent(`Cumulative Total` / max(`Cumulative Total`))
+    ) %>%
+    ungroup() %>%
+    left_join(samples, by = "Filename") %>%
+    rename_all(str_to_title) %>%
+    ggplot(aes(Length, `Cumulative Total`, group = Filename, label = `Cumulative Percent`)) +
+    geom_line(aes(colour = Group), size = 1/4) +
+    scale_y_continuous(label = comma) +
+    scale_colour_manual(
+      values = group_cols
+    ) 
+)
+```
+
+## GC Content
+
+```{r plotCumulativeGC, fig.cap = "*GC content shown as a cumulative distribution for all libraries. Groups can be hidden by clicking on them in the legend.*"}
+ggplotly(
+  getModule(trimFqc, "Per_sequence_GC_content") %>%
+    group_by(Filename) %>%
+    mutate(
+      cumulative = cumsum(Count) / sum(Count)
+    ) %>%
+    ungroup() %>%
+    left_join(samples, by = "Filename") %>%
+    bind_rows(
+      getGC(gcTheoretical, sp, "Trans") %>%
+        mutate_at(sp, cumsum) %>% 
+        rename_all(
+          str_replace_all, 
+          pattern = sp, replacement = "cumulative",
+        ) %>%
+        mutate(
+          Filename = "Theoretical GC",
+          group = Filename
+        )
+    ) %>%
+    mutate(
+      group = as.factor(group),
+      group = relevel(group, ref = "Theoretical GC"),
+      cumulative = round(cumulative*100, 2)
+    ) %>%
+    ggplot(aes(GC_Content, cumulative, group = Filename)) +
+    geom_line(aes(colour = group), size = 1/4) +
+    scale_x_continuous(label = ngsReports:::.addPercent) +
+    scale_y_continuous(label = ngsReports:::.addPercent) +
+    scale_colour_manual(
+      values = c("#000000", group_cols)
+    ) +
+    labs(
+      x = "GC Content",
+      y = "Cumulative Total",
+      colour = "Group"
+    )
+)
+```
+
+## Sequence Content
+
+```{r plotSeqContentResid, fig.cap = "*Base and Position specific residuals for each sample. The mean base content at each position was calculated for each nucleotide, and the sample-specific residuals calculated.*"}
+plotly::ggplotly(
+  getModule(trimFqc, module = "Per_base_sequence_content") %>% 
+    mutate(Base = fct_inorder(Base)) %>%
+    group_by(Base) %>% 
+    mutate(
+      across(c("A", "C", "G", "T"), function(x){x - mean(x)}) 
+    ) %>% 
+    pivot_longer(
+      cols = c("A", "C", "G", "T"), 
+      names_to = "Nuc", 
+      values_to = "resid"
+    ) %>%
+    left_join(samples, by = "Filename") %>%
+    ggplot(
+      aes(Base, resid, group = Filename, colour = group)
+    ) + 
+    geom_line() +
+    facet_wrap(~Nuc) + 
+    scale_colour_manual(values = group_cols) +
+    labs(
+      x = "Read Position", y = "Residual", colour = "Group"
+    )
+)
+```
+
+<button type="button" class="btn btn-default btn-sessioninfo" data-toggle="collapse" data-target="#sessioninfo" style="display: block;">
+<span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span> Session information
+</button>
+</p>
+<div id="sessioninfo" class="collapse">
+```{r session-info, echo=FALSE}
+pander::pander(sessionInfo())
+```
+</div>

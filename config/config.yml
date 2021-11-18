@@ -1,0 +1,67 @@
+samples: config/samples.tsv
+
+# The file extension. Usually one of .fq.gz/.fastq.gz/.fq/.fastq
+# Any additional 'tag' such as _R1_001 which trails the values provided
+# in the samples file should be specified as the tag
+suffix: .fastq.gz
+tags:
+  r1: _R1
+  r2: _R2
+  tag: ""
+
+# The root argument tells you where the genome will be located
+# on the local system. All other arguments are required for
+# downloading. Currently hard-wired for human
+ref:
+  build: GRCh38
+  release: 104
+  root: /refs
+  species: homo_sapiens
+
+# If you have short reads (<150nt) don't group during fastqc
+fastqc:
+  params: "--nogroup --noextract"
+
+# Settings for Adapter Removal
+trimming:
+  ## These should be checked against those detected by bbmerge
+  ## Currently these are taken from the NuGen kit
+  adapter1: AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
+  adapter2: AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT
+  maxns: 1
+  minlength: 50
+  minqual: 30
+  extra: "--gzip --trimqualities"
+
+# Additional settings for salmon
+salmon:
+  libType: 'A'
+  numBootstraps: 50
+  numGibbsSamples: 0
+  thinningFactor: 100
+  extra: "--gcBias --recoverOrphans"
+
+# Parameters for Count-Level QC & Analysis.
+# These must correspond to columns in the samples file and will be ignored if
+# not. The column 'treat' refers to the primary groups of interest, whilst
+# nesting (e.g. passage) can be specified using the `batch` argument. The final
+# 'other' category allows for multiple sequencing runs, or any other parameters
+# of key interest
+# Each A vs B comparison to be performed during actual analysis should be
+# specified as a separate line in the comparisons tag. The first specified will
+# always be trated as the reference level
+analysis:
+  alpha: 0.05 # The FDR
+  fc: 1.2 # The threshold for `glmTreat()`
+  mincpm: 1 # Minimum CPM for considering a gene detected
+  treat: treat # A column of samples.tsv which will be used for all comparisons
+  batch: replicate # Only specify a column for a nested approach. Otherwise place these in 'other'
+  other:
+  comparisons:
+    - ['siCtrl', 'siTFAP2B'] # Set all pairwise comparisons here
+
+# Setting this to false will prevent any manually edited version of Rmd files
+# from being over-written during a rerun. This is not foolproof, so please
+# ensure you have backed these up via `git` before calling snakemake again.
+params:
+  overwrite: false

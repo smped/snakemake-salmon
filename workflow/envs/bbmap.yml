@@ -1,0 +1,6 @@
+name: bbmap
+channels:
+  - defaults
+  - bioconda
+dependencies:
+  - bbmap

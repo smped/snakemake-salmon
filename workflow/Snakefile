@@ -1,0 +1,129 @@
+import pandas as pd
+import os
+import urllib
+import random
+
+configfile: "config/config.yml"
+
+def check_git(x = "."):
+	is_installed = subprocess.run(
+    	['which', 'git'], universal_newlines=True, check=True,
+    	stdout=subprocess.PIPE
+	)
+	path = os.path.join(x, ".git")
+	repo_exists = os.path.isdir(path)
+	if is_installed and repo_exists:
+		ret_val = True
+		print(
+			"Viable git repository detected. Files will be added when created",
+			file = sys.stderr
+		)
+	else:
+		ret_val = False
+		print("No viable git repository detected", file = sys.stderr)
+	return(ret_val)
+
+def make_contrasts(x, set):
+	ret_val=[]
+	for comp in x:
+		ref = comp[0]
+		if ref not in set:
+			print("Comparison level " + ref + ' not found')
+			sys.exit(1)
+		treat = comp[1]
+		if treat not in set:
+			print("Comparison level " + treat + ' not found')
+			sys.exit(1)
+		ret_val.extend([ref + "_" + treat])
+	return(ret_val)
+
+
+#####################
+## GLOBAL SETTINGS ##
+#####################
+git_add = check_git(".")
+overwrite = config['params']['overwrite']
+
+#####################
+## SETUP REFERENCE ##
+#####################
+# Define the path for the reference
+# Currently hard-wired for ensembl & human GRCh38
+ref_release = str(config['ref']['release'])
+ref_species = config['ref']['species']
+species_upr = ref_species.capitalize()
+ref_build = config['ref']['build']
+ref_path = os.path.join(
+	config['ref']['root'], 'ensembl-release-' + ref_release, ref_species
+)
+ref_fa = species_upr + '.' + ref_build +'.dna.primary_assembly.fa.gz'
+trans_fa = species_upr + '.' + ref_build + '.cdna.all.fa.gz'
+ref_gtf = species_upr + '.' + ref_build + '.' + ref_release + '.gtf.gz'
+ALL_REFS = expand(
+	os.path.join(ref_path, "{file}"),
+	file = [
+		ref_fa, trans_fa, ref_gtf,
+		'decoys.txt', 'gentrome.fa.gz', 'salmon_index'
+	]
+
+)
+
+#######################
+## SAMPLE PROCESSING ##
+#######################
+# Samples
+samples = pd.read_table(config["samples"])
+suffix = config['suffix']
+tag = config['tags']['tag']
+r1 = config['tags']['r1']
+r2 = config['tags']['r2']
+ALL_FQC = expand(
+	os.path.join("data", "{step}", "FastQC", "{sample}{reads}_fastqc{suffix}"),
+	suffix = ['.zip', '.html'],
+	sample = samples['sample'], reads = [r1, r2],
+	step = ['raw', 'trimmed']
+)
+ALL_ADAPTER = expand(
+	os.path.join("data", "raw", "adapters", "{sample}.adapters.fa"),
+	sample = samples['sample']
+)
+ALL_TRIMMED = expand(
+	os.path.join("data", "trimmed", "fastq", "{sample}{reads}" + suffix),
+    reads = [r1, r2], sample = samples['sample']
+)
+ALL_SALMON = expand(
+	os.path.join("data", "quants", "{sample}", "quant.sf"),
+    sample = samples['sample']
+)
+
+###############
+## Rmarkdown ##
+###############
+comps = make_contrasts(
+	config['analysis']['comparisons'], 
+	set(samples[config['analysis']['treat']])
+)
+ALL_HTML = expand(
+	['docs/{file}.html'],
+	file = ['raw_fqc', 'trimmed_fqc', 'counts_qc']
+)
+ALL_HTML.extend(
+	expand(['docs/{comp}_dge.html'], comp = comps)
+)
+
+ALL_OUTPUT = []
+ALL_OUTPUT.extend(ALL_REFS)
+ALL_OUTPUT.extend(ALL_FQC)
+ALL_OUTPUT.extend(ALL_HTML)
+ALL_OUTPUT.extend(ALL_ADAPTER)
+ALL_OUTPUT.extend(ALL_SALMON)
+ALL_OUTPUT.extend(['docs/index.html'])
+
+rule all:
+	input: ALL_OUTPUT
+
+include: 'rules/reference.smk'
+include: 'rules/process_raw.smk'
+include: 'rules/salmon.smk'
+include: 'rules/build_site.smk'
+include: 'rules/dge.smk'

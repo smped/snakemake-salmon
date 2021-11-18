@@ -1,0 +1,16 @@
+name: nsgReports
+channels:
+  - defaults
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base=4.1.1
+  - r-biocmanager
+  - r-cowplot
+  - r-glue
+  - r-here
+  - r-pander
+  - r-plotly
+  - r-tidyverse
+  - r-yaml
+  - bioconductor-ngsReports

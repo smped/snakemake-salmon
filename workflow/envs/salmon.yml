@@ -1,0 +1,6 @@
+name: salmon
+channels:
+  - defaults
+  - bioconda
+dependencies:
+  - salmon

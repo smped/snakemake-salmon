@@ -1,0 +1,54 @@
+digraph snakemake_dag {
+    graph[bgcolor=white, margin=0];
+    node[shape=box, style=rounded, fontname=sans,                 fontsize=10, penwidth=2];
+    edge[penwidth=2, color=grey];
+	0[label = "all", color = "0.24 0.6 0.85", style="rounded"];
+	1[label = "download_genome", color = "0.35 0.6 0.85", style="rounded"];
+	2[label = "download_transcriptome", color = "0.47 0.6 0.85", style="rounded"];
+	3[label = "download_gtf", color = "0.55 0.6 0.85", style="rounded"];
+	4[label = "make_decoys", color = "0.39 0.6 0.85", style="rounded"];
+	5[label = "make_gentrome", color = "0.59 0.6 0.85", style="rounded"];
+	6[label = "index_reference", color = "0.63 0.6 0.85", style="rounded"];
+	7[label = "fastqc", color = "0.08 0.6 0.85", style="rounded"];
+	8[label = "remove_adapters", color = "0.31 0.6 0.85", style="rounded"];
+	9[label = "write_fastqc_summary", color = "0.16 0.6 0.85", style="rounded"];
+	10[label = "create_site_yml", color = "0.12 0.6 0.85", style="rounded"];
+	11[label = "write_counts_qc", color = "0.20 0.6 0.85", style="rounded"];
+	12[label = "salmon_quant", color = "0.00 0.6 0.85", style="rounded"];
+	13[label = "run_dge_analysis", color = "0.04 0.6 0.85", style="rounded"];
+	14[label = "make_dge_template", color = "0.51 0.6 0.85", style="rounded"];
+	15[label = "find_adapters", color = "0.27 0.6 0.85", style="rounded"];
+	16[label = "build_site_index", color = "0.43 0.6 0.85", style="rounded"];
+	13 -> 0
+	12 -> 0
+	7 -> 0
+	9 -> 0
+	11 -> 0
+	15 -> 0
+	16 -> 0
+	1 -> 0
+	4 -> 0
+	2 -> 0
+	3 -> 0
+	5 -> 0
+	6 -> 0
+	1 -> 4
+	1 -> 5
+	2 -> 5
+	4 -> 6
+	5 -> 6
+	8 -> 7
+	10 -> 9
+	7 -> 9
+	10 -> 11
+	12 -> 11
+	8 -> 12
+	6 -> 12
+	10 -> 13
+	11 -> 13
+	14 -> 13
+	10 -> 16
+	9 -> 16
+	11 -> 16
+	13 -> 16
+}            
