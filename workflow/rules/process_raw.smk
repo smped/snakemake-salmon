@@ -8,7 +8,9 @@ rule fastqc:
     params:
         extra = config['fastqc']['params'],
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = lambda wildcards: rnd_from_string(
+            wildcards.step + wildcards.sample
+        ),
         tries = 10
     conda: "../envs/fastqc.yml"
     log: "workflow/logs/FastQC/{step}/{sample}.log"
@@ -46,19 +48,13 @@ rule fastqc:
 
 rule find_adapters:
     input:
-        r1 = os.path.join(
-            "data", "raw", "fastq", "{sample}" + r1 + suffix
-        ),
-        r2 = os.path.join(
-            "data", "raw", "fastq", "{sample}" + r2 + suffix
-        )
+        r1 = os.path.join(raw_path, "fastq", "{sample}" + r1 + suffix),
+        r2 = os.path.join(raw_path, "fastq", "{sample}" + r2 + suffix)
     output: 
-        fa = os.path.join(
-            "data", "raw", "adapters", "{sample}" + '.adapters.fa'
-        )
+        fa = os.path.join(raw_path, "adapters", "{sample}" + '.adapters.fa')
     params:
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = lambda wildcards: rnd_from_string(wildcards.sample),
         tries = 10
     conda: '../envs/bbmap.yml'
     threads: 4
@@ -89,16 +85,16 @@ rule find_adapters:
 rule remove_adapters:
     input:
         config = 'config/config.yml',
-        r1 = os.path.join("data", "raw", "fastq", "{sample}" + r1 + suffix),
-        r2 = os.path.join("data", "raw", "fastq", "{sample}" + r2 + suffix)
+        r1 = os.path.join(raw_path, "fastq", "{sample}" + r1 + suffix),
+        r2 = os.path.join(raw_path, "fastq", "{sample}" + r2 + suffix)
     output:
         r1 = temp(
-            os.path.join("data", "trimmed", "fastq", "{sample}" + r1 + suffix)
+            os.path.join(trim_path, "fastq", "{sample}" + r1 + suffix)
         ),
         r2 = temp(
-            os.path.join("data", "trimmed", "fastq", "{sample}" + r2 + suffix)
+            os.path.join(trim_path, "fastq", "{sample}" + r2 + suffix)
         ),
-        log = "data/trimmed/logs/{sample}.settings"
+        log = os.path.join(trim_path, "logs", "{sample}.settings")
     conda:
         "../envs/adapterremoval.yml"
     params:
@@ -109,7 +105,7 @@ rule remove_adapters:
         maxns = config['trimming']['maxns'],
         extra = config['trimming']['extra'],
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = lambda wildcards: rnd_from_string("rmad" + wildcards.sample),
         tries = 10
     threads: 4
     log: "workflow/logs/adapterremoval/{sample}.log"

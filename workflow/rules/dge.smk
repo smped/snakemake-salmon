@@ -8,7 +8,7 @@ rule make_dge_template:
     params:
         comp = "{comp}",
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = rnd_from_string("make_dge_template"),
         tries = 10,
         overwrite = overwrite
     conda: '../envs/dge.yml'
@@ -42,16 +42,21 @@ rule make_dge_template:
 
 rule run_dge_analysis:
     input:
-        dge = 'data/quants/dgeNorm.rds',
-        logcpm = 'data/quants/logCPM.tsv',
+        data = expand(
+            os.path.join(quant_path, "{file}"), 
+            file = ['dgeNorm.rds', 'logCPM.tsv']
+        ),
         rmd = 'analysis/{comp}_dge.Rmd',
         yaml = os.path.join("analysis", "_site.yml")
     output:
-        html = 'docs/{comp}_dge.html',
+        files = expand(
+            os.path.join("docs", "{{comp}}_{file}"),
+            file = ['dge.html', 'topTable.tsv']
+        ),
         fig_path = directory("docs/{comp}_dge_files/figure-html")
     params:
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = rnd_from_string("run_dge_analysis"),
         tries = 10,
         overwrite = overwrite
     conda: '../envs/dge.yml'

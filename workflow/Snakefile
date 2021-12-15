@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 import urllib
-import random
+import hashlib
 
 configfile: "config/config.yml"
 
@@ -22,6 +22,11 @@ def check_git(x = "."):
 		ret_val = False
 		print("No viable git repository detected", file = sys.stderr)
 	return(ret_val)
+
+def rnd_from_string(x):
+	b = bytes(x, "utf8")
+	sha = int(hashlib.sha256(b).hexdigest(), base=16)
+	return float(sha) / pow(2, 256)
 
 def make_contrasts(x, set):
 	ret_val=[]
@@ -62,7 +67,7 @@ ref_gtf = species_upr + '.' + ref_build + '.' + ref_release + '.gtf.gz'
 ALL_REFS = expand(
 	os.path.join(ref_path, "{file}"),
 	file = [
-		ref_fa, trans_fa, ref_gtf,
+		ref_fa, trans_fa, #ref_gtf,
 		'decoys.txt', 'gentrome.fa.gz', 'salmon_index'
 	]
 
@@ -71,9 +76,13 @@ ALL_REFS = expand(
 #######################
 ## SAMPLE PROCESSING ##
 #######################
+raw_path = os.path.join("data", "raw")
+trim_path = os.path.join("data", "trimmed")
+quant_path = os.path.join("data", "quants")
 # Samples
 samples = pd.read_table(config["samples"])
 suffix = config['suffix']
+tag = config['tags']['tag']
 r1 = config['tags']['r1']
 r2 = config['tags']['r2']
 ALL_FQC = expand(
@@ -83,15 +92,15 @@ ALL_FQC = expand(
 	step = ['raw', 'trimmed']
 )
 ALL_ADAPTER = expand(
-	os.path.join("data", "raw", "adapters", "{sample}.adapters.fa"),
+	os.path.join(raw_path, "adapters", "{sample}.adapters.fa"),
 	sample = samples['sample']
 )
 ALL_TRIMMED = expand(
-	os.path.join("data", "trimmed", "fastq", "{sample}{reads}" + suffix),
+	os.path.join(trim_path, "fastq", "{sample}{reads}" + suffix),
     reads = [r1, r2], sample = samples['sample']
 )
 ALL_SALMON = expand(
-	os.path.join("data", "quants", "{sample}", "quant.sf"),
+	os.path.join(quant_path, "{sample}", "quant.sf"),
     sample = samples['sample']
 )
 
@@ -99,7 +108,7 @@ ALL_SALMON = expand(
 ## Rmarkdown ##
 ###############
 comps = make_contrasts(
-	config['analysis']['comparisons'],
+	config['analysis']['comparisons'], 
 	set(samples[config['analysis']['treat']])
 )
 ALL_HTML = expand(

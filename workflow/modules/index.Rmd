@@ -61,21 +61,19 @@ Only detected (i.e. non-zero) transcripts are used in the estimation of these va
 - The [Quasi-Likelihood approach](https://doi.org/10.1515/1544-6115.1826) is used for dispersion estimates
 - Hypothesis testing uses a range-based $H_0$ via [`glmTreat()`](https://doi.org/10.1093/bioinformatics/btp053)
 
-
 ## DAG
 
 ```{r plot-workflow, fig.height = 10, fig.width = 10, fig.cap = "*Summary of processing workflow. The primary data pipeline is shown in red, preparatory steps are shown in blue whilst collation of final output is in green.*"}
 here::here("workflow", "rules", "rulegraph.dot") %>%
   readLines() %>%
   rm_dot_node(node = "\"all\"") %>%
-  add_input_node(node = "Raw Data", col = "red", ignore = "(download|define|create|make)") %>%
+  add_input_node(node = "Raw Data", col = "red", ignore = "(download|define|macs2|create|make)") %>%
   change_node_colour("(remove|salmon|counts|analysis)", "red") %>%
-  change_node_colour("(download|make|index)", "blue") %>%
+  change_node_colour("(download|make|index|scaffold)", "blue") %>%
   change_node_colour("(find|fastqc|site|template)", "forestgreen") %>%
   str_replace_all("_", "\n") %>%
   str_replace_all("snakemake\ndag", "snakemake_dag") %>%
-  str_replace_all("fontsize=[0-9]+", "fontsize=16") %>%
-  str_replace_all("(.+graph.+)(\\];)", "\\1, rankdir = LR\\2") %>%
+  str_replace_all("fontsize=[0-9]+", "fontsize=12") %>%
   grViz()
 ```
 

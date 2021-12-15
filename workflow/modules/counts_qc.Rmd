@@ -49,7 +49,7 @@ stopifnot(all(unlist(key_cols) %in% colnames(samples)))
 samples <- samples %>% 
   mutate(
     across(all_of(as.character(unlist(key_cols))), as.factor),
-    label = paste(!!!syms(key_cols[c("treat", "batch")]), sep = "_")
+    label = paste(!!!syms(key_cols), sep = "_")
     )
 colours <- key_cols %>% 
   lapply(

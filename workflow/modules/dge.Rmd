@@ -33,7 +33,10 @@ key_cols <- config$analysis[c("treat", "batch" ,"other")] %>%
 ```{r load-data}
 dgeNorm <- here::here("data", "quants", "dgeNorm.rds") %>% 
   read_rds() %>% 
-  .[.$samples[[key_cols$treat]] %in% treat_levels,]
+  .[,.$samples[[key_cols$treat]] %in% treat_levels]
+dgeNorm$samples[[key_cols$treat]] <- factor(
+  dgeNorm$samples[[key_cols$treat]], levels= treat_levels
+)
 samples <- as_tibble(dgeNorm$samples) %>% 
   dplyr::select(
     sample, label, any_of(as.character(unlist(key_cols)))

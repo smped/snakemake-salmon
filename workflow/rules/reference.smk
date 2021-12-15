@@ -40,9 +40,44 @@ rule download_genome:
 		url = ref_url
 	log: "workflow/logs/reference/download_genome.log"
 	threads: 1
+	conda: "../envs/samtools.yml"
 	shell:
 		"""
-		curl -o {output} {params.url} 2> {log}
+		## Download and compress to bgzip on the fly
+		curl {params.url} 2> {log} | zcat | bgzip -c > {output}
+		"""
+
+rule index_genome:
+	input: rules.download_genome.output
+	output: 
+		fai = os.path.join(ref_path, ref_fa + ".fai"),
+		gzi = os.path.join(ref_path, ref_fa + ".gzi")
+	log: "workflow/logs/reference/index_genome.log"
+	threads: 1
+	conda: "../envs/samtools.yml"
+	shell:
+		"""
+		samtools faidx \
+		  --gzi-idx {output.gzi} \
+		  --fai-idx {output.fai} \
+		  {input}
+		"""
+
+rule remove_scaffolds:
+	input: 
+		fa = rules.download_genome.output,
+		gzi = rules.index_genome.output.gzi
+	output: 
+		os.path.join(
+			ref_path, species_upr + "." + ref_build + ".dna.chrom_only.fa.gz"
+		)
+	threads: 1
+	conda: "../envs/samtools.yml"
+	shell:
+		"""
+		samtools faidx {input.fa} \
+			1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 MT X Y | \
+			gzip > {output}
 		"""
 
 rule download_transcriptome:
@@ -54,7 +89,48 @@ rule download_transcriptome:
 	threads: 1
 	shell:
 		"""
-		curl -o {output} {params.url} 2> {log}
+		curl {params.url} 2> {log} | zcat | bgzip -c > {output}
+		"""
+
+rule index_transcriptome:
+	input: rules.download_transcriptome.output
+	output: 
+		fai = os.path.join(ref_path, trans_fa + ".fai"),
+		gzi = os.path.join(ref_path, trans_fa + ".gzi")
+	log: "workflow/logs/reference/index_transcriptome.log"
+	threads: 1
+	conda: "../envs/samtools.yml"
+	shell:
+		"""
+		samtools faidx \
+		  --gzi-idx {output.gzi} \
+		  --fai-idx {output.fai} \
+		  {input}
+		"""
+
+rule remove_scaffold_transcripts:
+	input: 
+		fa = rules.download_transcriptome.output,
+		gzi = rules.index_transcriptome.output.gzi
+	output: 
+		ids = os.path.join(ref_path, "chr_ids.txt"),
+		fa = os.path.join(
+			ref_path, species_upr + "." + ref_build + ".cdna.chrom_only.fa.gz"
+		)
+	params:
+		regexp = '^>.+' + ref_build + ':[0-9XYM]'
+	threads: 1
+	conda: "../envs/samtools.yml"
+	shell:
+		"""
+		zcat {input.fa} | \
+			egrep "{params.regexp}" | \
+			cut -f1 -d\ | \
+			sed -r 's/^>//g' > {output.ids}
+		samtools faidx \
+		  -r {output.ids} \
+		  {input.fa} | \
+		  bgzip -c > {output.fa}
 		"""
 
 rule download_gtf:
@@ -70,7 +146,7 @@ rule download_gtf:
 		"""
 
 rule make_decoys:
-	input: ancient(rules.download_genome.output)
+	input: ancient(rules.remove_scaffolds.output)
 	output: os.path.join(ref_path, "decoys.txt")
 	threads: 1
 	shell:
@@ -81,8 +157,8 @@ rule make_decoys:
 
 rule make_gentrome:
 	input: 
-		ref_fa = ancient(rules.download_genome.output),
-		trans_fa = ancient(rules.download_transcriptome.output)
+		ref_fa = ancient(rules.remove_scaffolds.output),
+		trans_fa = ancient(rules.remove_scaffold_transcripts.output.fa)
 	output: os.path.join(ref_path, "gentrome.fa.gz")
 	threads: 1
 	shell:
@@ -91,8 +167,8 @@ rule make_gentrome:
 		"""
 
 rule index_reference:
- 	input:
-	 	gentrome = rules.make_gentrome.output,
+	input:
+		gentrome = rules.make_gentrome.output,
 		decoys = rules.make_decoys.output
 	output: directory(os.path.join(ref_path, "salmon_index"))
 	threads: 12

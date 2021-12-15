@@ -1,51 +1,48 @@
 rule salmon_quant:
     input:
         config = 'config/config.yml',
-        r1 = os.path.join("data", "trimmed", "fastq", "{sample}" + r1 + suffix),
-        r2 = os.path.join("data", "trimmed", "fastq", "{sample}" + r2 + suffix),
+        r1 = os.path.join(trim_path, "fastq", "{sample}" + r1 + suffix),
+        r2 = os.path.join(trim_path, "fastq", "{sample}" + r2 + suffix),
         index = rules.index_reference.output
     output:
-        quant = os.path.join("data", "quants", "{sample}", "quant.sf"),
+        quant = os.path.join(quant_path, "{sample}", "quant.sf"),
         aux = temp(
             expand(
-                os.path.join(
-                    "data", "quants", "{{sample}}", "aux_info", "{file}"
-                ),
+                os.path.join(quant_path, "{{sample}}", "aux_info", "{file}"),
                 file = [
                     'ambig_info.tsv', 'expected_bias.gz', 'exp_gc.gz', 'fld.gz',
-                    'meta_info.json', 'observed_bias_3p.gz', 'observed_bias.gz',
-                    'obs_gc.gz'
+                    'observed_bias_3p.gz', 'observed_bias.gz', 'obs_gc.gz'
                 ]
             )
         ),
-        boots = directory(
-            os.path.join("data", "quants", "{sample}", "aux_info", "bootstrap")
+        boots = expand(
+            os.path.join(
+                quant_path, "{{sample}}", "aux_info", "bootstrap", "{file}.gz"
+            ),
+            file = ['bootstraps', 'names.tsv']
         ),
         libParams = temp(
-            os.path.join(
-                "data", "quants", "{sample}", "libParams", "flenDist.txt"
-            )
+            os.path.join(quant_path, "{sample}", "libParams", "flenDist.txt")
         ),
         logs = temp(
-            os.path.join(
-                "data", "quants", "{sample}", "logs", "salmon_quant.log"
-            )
+            os.path.join(quant_path, "{sample}", "logs", "salmon_quant.log")
         ),
-        json = temp(
-            expand(
-                os.path.join("data", "quants", "{{sample}}", "{file}.json"),
-                file = ['cmd_info', 'lib_format_counts']
-            )
+        meta = os.path.join(
+            quant_path, "{sample}", "aux_info", "meta_info.json"
+        ),
+        json = expand(
+            os.path.join(quant_path, "{{sample}}", "{file}.json"),
+            file = ['cmd_info', 'lib_format_counts']
         )
     params:
-        dir = os.path.join("data", "quants", "{sample}"),
+        dir = os.path.join(quant_path, "{sample}"),
         lib = config['salmon']['libType'],
         nBoot = config['salmon']['numBootstraps'],
         nGibbs = config['salmon']['numGibbsSamples'],
         thin = config['salmon']['thinningFactor'],
         extra = config['salmon']['extra'],
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = lambda wildcards: rnd_from_string("sq" + wildcards.sample),
         tries = 10
     threads: 8
     conda: "../envs/salmon.yml"
@@ -75,6 +72,6 @@ rule salmon_quant:
                 sleep {params.interval}
                 ((TRIES--))
             done
-            git add {output.quant}
+            git add {output.quant} {output.json} {output.meta}
         fi
         """

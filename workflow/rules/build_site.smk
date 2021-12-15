@@ -3,7 +3,7 @@ rule create_site_yml:
     output: 'analysis/_site.yml'
     params:
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = rnd_from_string("create_site_yml"),
         tries = 10
     threads: 1
     conda: "../envs/diagrammer.yml"
@@ -26,27 +26,73 @@ rule create_site_yml:
         fi
         """
 
-rule write_fastqc_summary:
+rule write_raw_fastqc_summary:
     input:
         config = 'config/config.yml',
         fqc = expand(
-                os.path.join("data/{{step}}/FastQC", "{sample}{reads}_fastqc.zip"),
-                sample = samples['sample'], reads = [r1, r2],
+                os.path.join("data/raw/FastQC", "{sample}{reads}_fastqc.zip"),
+                sample = samples['sample'], reads = [r1, r2]
         ),
-        rmd = 'workflow/modules/{step}_fqc.Rmd',
+        rmd = 'workflow/modules/raw_fqc.Rmd',
         yaml = os.path.join("analysis", "_site.yml")
     output:
-        rmd = 'analysis/{step}_fqc.Rmd',
-        html = 'docs/{step}_fqc.html',
-        fig_path = directory("docs/{step}_fqc_files/figure-html")
+        rmd = 'analysis/raw_fqc.Rmd',
+        html = 'docs/raw_fqc.html',
+        fig_path = directory("docs/raw_fqc_files/figure-html")
     params:
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = rnd_from_string("raw_fqc"),
         tries = 10,
         overwrite = overwrite
     conda: '../envs/ngsReports.yml'
     threads: 1
-    log: "workflow/logs/rmarkdown/{step}_fqc.log"
+    log: "workflow/logs/rmarkdown/raw_fqc.log"
+    shell:
+        """
+        ## Make sure existing files are not overwritten,
+        ## unless explicitly requested
+        if [[ ! -f {output.rmd} || {params.overwrite} == 'True' ]]; then
+            cp {input.rmd} {output.rmd}
+        fi
+
+        R -e "rmarkdown::render_site('{output.rmd}')" &>> {log}
+        if [[ {params.git} == "True" ]]; then
+                TRIES={params.tries}
+                while [[ -f .git/index.lock ]]
+                do
+                    if [[ "$TRIES" == 0 ]]; then
+                        echo "ERROR: Timeout while waiting for removal of git index.lock" &>> {log}
+                        exit 1
+                    fi
+                    sleep {params.interval}
+                    ((TRIES--))
+                done
+                git add {output}
+        fi
+        """
+
+rule write_trim_fastqc_summary:
+    input:
+        config = 'config/config.yml',
+        fqc = expand(
+                os.path.join("data/{step}/FastQC", "{sample}{reads}_fastqc.zip"),
+                sample = samples['sample'], reads = [r1, r2],
+                step = ['raw', 'trimmed']
+        ),
+        rmd = 'workflow/modules/trimmed_fqc.Rmd',
+        yaml = os.path.join("analysis", "_site.yml")
+    output:
+        rmd = 'analysis/trimmed_fqc.Rmd',
+        html = 'docs/trimmed_fqc.html',
+        fig_path = directory("docs/trimmed_fqc_files/figure-html")
+    params:
+        git = git_add,
+        interval = rnd_from_string("trimmed_fqc"),
+        tries = 10,
+        overwrite = overwrite
+    conda: '../envs/ngsReports.yml'
+    threads: 1
+    log: "workflow/logs/rmarkdown/trimmed_fqc.log"
     shell:
         """
         ## Make sure existing files are not overwritten,
@@ -88,7 +134,7 @@ rule write_counts_qc:
         fig_path = directory("docs/counts_qc_files/figure-html")
     params:
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = rnd_from_string("write_counts_qc"),
         tries = 10,
         overwrite = overwrite
     conda: '../envs/counts_qc.yml'
@@ -130,7 +176,7 @@ rule build_site_index:
         rmd = os.path.join("analysis", "index.Rmd")
     params:
         git = git_add,
-        interval = random.uniform(0, 1),
+        interval = rnd_from_string("build_site_index"),
         tries = 10,
         overwrite = overwrite
     threads: 1
